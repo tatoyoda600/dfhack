@@ -229,3 +229,16 @@ add_subdirectory(external)
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.custom.txt")
     include("${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.custom.txt")
 endif()
+
+
+
+
+
+
+##########################################################
+# tatoyoda600
+
+option(BUILD_DUMP "Build my dump plugin." ON)
+if(BUILD_DUMP)
+    dfhack_plugin(dump dump.cpp LINK_LIBRARIES lua COMPILE_FLAGS_GCC "-O0 -ggdb3" COMPILE_FLAGS_MSVC "/Od")
+endif()
