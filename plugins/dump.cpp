@@ -31,6 +31,8 @@ using namespace df::enums;
 #define PTR_ADD(ptr, offset) reinterpret_cast<const void *>(uintptr_t(ptr) + (offset))
 
 class DumpItem;
+class DumpStruct;
+class DumpPrimitive;
 // A list of DF's memory ranges
 std::vector<t_memrange> mapped;
 // Map of memory addresses to their DumpItems
@@ -73,7 +75,7 @@ type_identity* GetIdentity(T& var) {
     return nullptr;
 }
 
-static char* bytesToHex(void* address, size_t size) {
+static char* bytesToHex(const void* address, size_t size) {
     char* buffer = new char[size * 2 + 1];
     for (int i = 0; i < size; i++) {
         const unsigned char* temp = static_cast<const unsigned char*>(address);
@@ -82,12 +84,27 @@ static char* bytesToHex(void* address, size_t size) {
     return buffer;
 }
 
+template<>
+static const char* toStringValue<bool>(const void* address) {
+    return *reinterpret_cast<const uint8_t*>(address) & 0x1 ? "true" : "false";
+}
+
+template<>
+static const char* toStringValue<char*>(const void* address) {
+    return reinterpret_cast<const char*>(address);
+}
+
+template<typename T>
+static const char* toStringValue(const void* address) {
+    return std::to_string(*reinterpret_cast<const T*>(address)).c_str();
+}
+
 // Calculate the byte size a structure should have, using identity and count
 inline static size_t getIdentityByteSize(const type_identity* identity, size_t count = 0) {
     return identity->byte_size() * (count ? count : 1);
 }
 
-static bool isProcessing(const void* ptr, type_identity* identity, size_t count = 0) {
+static bool isProcessing(const void* ptr, const type_identity* identity, size_t count = 0) {
     const void* ptrEnd = PTR_ADD(ptr, getIdentityByteSize(identity, count));
 
     auto prev = dumpItems.lower_bound(ptr);
@@ -182,6 +199,99 @@ static bool isValidDereference(const void* ptr, size_t size) {
     return false;
 }
 
+// Processes a string
+static DumpPrimitive* dispatchString(int depth, const void* ptr) {
+#ifdef WIN32
+    // Represents the internal byte structure of std::string
+    struct string_data
+    {
+        // 16 bytes are used to store either
+        union
+        {
+            // Pointer to an externally allocated char array
+            uintptr_t start;
+            // A <16 char array directly in the structure (small string optimization)
+            char local_data[16];
+        };
+        // Number of characters in the string
+        size_t length;
+        // Size of the allocated char array
+        size_t capacity;
+    };
+    // Convert the string to string_data
+    const string_data* string = reinterpret_cast<const string_data*>(ptr);
+    // Establish that the GCC compiler wasn't used
+    const bool is_gcc = false;
+    // Whether the char array is contained inside the structure, or externally
+    const bool is_local = string->capacity < 16;
+#else
+    struct string_data
+    {
+        // Pointer to the start of the char array
+        uintptr_t start;
+        // Number of characters in the string
+        size_t length;
+        // 16 bytes are used to store either
+        union
+        {
+            // A <16 char array directly in the structure (small string optimization)
+            char local_data[16];
+            // The size of the externally allocated char array
+            size_t capacity;
+        };
+    };
+    // Convert the string to string_data
+    const string_data* string = reinterpret_cast<const string_data*>(ptr);
+    // Establish that the GCC compiler wasn used
+    const bool is_gcc = true;
+    // Whether the char array is contained inside the structure, or externally
+    const bool is_local = string->start == reinterpret_cast<uintptr_t>(&string->local_data[0]);
+#endif
+
+    // Get the pointer to the start of the char array
+    const char* start = is_local ? &string->local_data[0] : reinterpret_cast<const char*>(string->start);
+    // Get the length of the string
+    ptrdiff_t length = string->length;
+    // Get the capacity of the string
+    //  This value will be wrong if (is_gcc && is_local), due to the union
+    ptrdiff_t capacity = string->capacity;
+
+    // If length is less than 0, fail
+    if (
+        (length < 0)
+        || (is_gcc && length > 0 && !is_valid_dereference(reinterpret_cast<void*>(string->start), 1))
+        || (is_local && length >= 16)
+        || (!(is_gcc && is_local) && capacity < 0)
+        || (!(is_gcc && is_local) && capacity < length)
+    ) {
+        return nullptr;
+    }
+    else {
+        return DumpPrimitive::create<char*>(depth, start);
+    }
+}
+
+// Processes a primitive item
+static DumpPrimitive* dispatchPrimitive(int depth, const void* ptr, const type_identity* identity) {
+    if (identity == df::identity_traits<std::string>::get()) {
+        return dispatchString(depth, ptr);
+    }
+    else if (identity == df::identity_traits<char*>::get()) {
+        return DumpPrimitive::create<char*>(depth, ptr);
+    }
+    else if (identity == df::identity_traits<bool>::get()) {
+        return DumpPrimitive::create<bool>(depth, ptr);
+    }
+    else if (dynamic_cast<const df::integer_identity_base*>(identity)) {
+        return DumpPrimitive::create<df::integer_identity_base>(depth, ptr);
+    }
+    else if (dynamic_cast<const df::float_identity_base*>(identity)) {
+        return DumpPrimitive::create<df::float_identity_base>(depth, ptr);
+    }
+    else {
+        return nullptr;
+    }
+}
 
 class IdentityItem {
 public:
@@ -315,17 +425,15 @@ public:
     const void* ptr = nullptr;
     const type_identity* identity = nullptr;
     const size_t count = 0;
-    const std::vector<std::tuple<std::string, DumpItem*>> children;
 
-    // Create
-    DumpItem(int depth, const void* ptr, type_identity* identity, size_t count = 0):
+    DumpItem(int depth, const void* ptr, const type_identity* identity, size_t count = 0) :
         ptr(ptr),
         count(count)
     {
         if (!ptr || !identity || depth < 0)
             return;
 
-        type_identity* tempIdentity = nullptr;
+        const type_identity* tempIdentity = nullptr;
 
         // If the item is a class
         if (identity->type() == IDTYPE_CLASS) {
@@ -368,7 +476,6 @@ public:
             return;
 
         this->identity = tempIdentity;
-        this->dispatch();
     }
 
     // Encode
@@ -378,17 +485,49 @@ public:
     size_t getByteSize() const {
         return getIdentityByteSize(identity, count);
     }
+};
+
+class DumpPrimitive :public DumpItem {
+public:
+    const char* value;
+
+    // Create
+    DumpPrimitive(int depth, const void* ptr, const type_identity* identity, const char* value) :
+        DumpItem(depth, ptr, identity)
+    {
+        if (this->identity) {
+            // If identity is set, then DumpItem was created successfully
+            this->value = value;
+        }
+    }
+
+    template<typename T>
+    static inline DumpPrimitive* create(int depth, const void* ptr) {
+        return new DumpPrimitive(depth, ptr, df::identity_traits<T>::get(), toStringValue<T>(ptr));
+    }
+};
+
+class DumpStruct : public DumpItem {
+    std::vector<std::tuple<std::string, DumpItem*>> children;
+
+    // Create
+    DumpStruct(int depth, const void* ptr, const type_identity* identity, size_t count = 0) :
+        DumpItem(depth, ptr, identity, count)
+    {
+        if (this->identity) {
+            // If identity is set, then DumpItem was created successfully
+            this->dispatch(depth);
+        }
+    }
 
 private:
-    void dispatch() {
-        // INVESTIGATE THIS SECTION!! <----------------------------------------------------------------------------------
-        //  (The following dispatch section needs to somehow give back the list of children)
-
+    void dispatch(int depth) {
         // Get the starting pointer and item size
         const void* curPtr = ptr;
         size_t size = identity->byte_size();
         // Loop through each element of the list, or just once if not a list
         for (size_t i = 0; i < (count ? count : 1); i++) {
+            DumpItem* item = nullptr;
             // Based on the type of data, process the item differently
             switch (identity->type())
             {
@@ -398,7 +537,7 @@ private:
             case IDTYPE_OPAQUE: // (What is this??)
                 break;
             case IDTYPE_PRIMITIVE:
-                dispatch_primitive(curPtr, identity);
+                item = dispatchPrimitive(depth, curPtr, identity);
                 break;
             case IDTYPE_POINTER:
                 dispatch_pointer(curPtr, identity, count);
@@ -432,12 +571,13 @@ private:
                 break;
             }
 
+            children.push_back(std::make_tuple(std::to_string(i), item));
+
             // Advance to the next element in the list
             curPtr = PTR_ADD(curPtr, size);
         }
     }
 };
-
 
 // Data format plan:
 //  - Parsing function:
