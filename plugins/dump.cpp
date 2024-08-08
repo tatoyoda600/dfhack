@@ -314,7 +314,7 @@ public:
         if (!fieldInfo || fieldInfo->mode == struct_field_info::END)
             return;
 
-        // INVESTIGATE THIS SECTION!! <----------------------------------------------------------------------------------
+        // INVESTIGATE THIS SECTION!! <-----------------------------------------------------------------------------------
         //  (What purpose does identity serve when valid is false?)
         this->identity = fieldInfo->type;
         // Depending on the type of struct field, process its data differently
@@ -456,7 +456,7 @@ public:
         if (isProcessing(ptr, tempIdentity))
             return;
 
-        // INVESTIGATE THIS SECTION!! <----------------------------------------------------------------------------------
+        // INVESTIGATE THIS SECTION!! <-----------------------------------------------------------------------------------
         //  (When/Why are elements erased from the list? Should anything be done before they're erased?)
         // Get the address of the end of the item
         const void* ptrEnd = PTR_ADD(ptr, this->getByteSize());
@@ -539,6 +539,11 @@ private:
             case IDTYPE_PRIMITIVE:
                 item = dispatchPrimitive(depth, curPtr, identity);
                 break;
+            // TODO:
+            //   - Continue reimplementing the dispatchers to fit into the dump script
+            //     + Must return DumpPrimitive*
+            //     + Must take in a depth int
+            //     + Can't reference any function/variable from the check-structure-sanity recreation
             case IDTYPE_POINTER:
                 dispatch_pointer(curPtr, identity, count);
                 break;
@@ -679,6 +684,18 @@ void main(color_ostream& out, std::string path, int depth = 10, bool compare = f
     DFHack::Core::getInstance().p->getMemRanges(mapped);
 
     DumpItem stateItem = DumpItem(depth, statePtr, stateIdentity);
+
+    // TODO:
+    //   - Start off the dispatch chain
+    //     + Currently stateItem is a DumpItem, this means it never dispatches
+    //     + One of the following needs to happen:
+    //       * DumpItem needs to dispatch (Check if bad, think it might be)
+    //       * stateItem has to be a DumpStruct (Might need checks to make sure stateItem is a struct first)
+    //       * Some DumpItem::create function needs to be made (Would return a DumpItem, but would be free to use casted DumpStruct or DumpPrimitive)
+    //   - Start off the encoding chain
+    //     + All DumpItem classes need encode functions
+    //       * These have to write to a given file (Make sure they write directly to the file, no storage strings hogging memory)
+    //       * Each needs to invoke encode functions in child items, if applicable
 }
 
 
