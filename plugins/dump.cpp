@@ -199,6 +199,21 @@ static bool isValidDereference(const void* ptr, size_t size) {
     return false;
 }
 
+// Validate that an object of type T could be located at 'ptr' and attempt to get said object, returning a default value otherwise
+template<typename T>
+static T dereferenceOrDefault(const void* ptr, T def = T()) {
+    // Get the type_identity for T (Using void* if it's a pointer)
+    const type_identity* identity = df::identity_traits<typename safe_t<T>::type>::get();
+    if (isValidDereference(ptr, identity->byte_size())) {
+        // Get the object instance ptr represents
+        return *reinterpret_cast<const T*>(ptr);
+    }
+    // Return the default value
+    return def;
+}
+
+#pragma region Dispatchers
+
 // Processes a string
 static DumpPrimitive* dispatchString(int depth, const void* ptr) {
 #ifdef WIN32
@@ -292,6 +307,23 @@ static DumpPrimitive* dispatchPrimitive(int depth, const void* ptr, const type_i
         return nullptr;
     }
 }
+
+// Processes a pointer
+static DumpItem* dispatchPointer(int depth, const void* ptr, const type_identity* identity, size_t count) {
+    // Make sure that the pointer is valid and initialized
+    const void* targetPtr = dereferenceOrDefault<const void*>(ptr, nullptr);
+    if (!targetPtr)
+        return;
+
+    // Get the type identity of the target the pointer references
+    const type_identity* targetIdentity = static_cast<const pointer_identity*>(identity)->getTarget();
+    if (!targetIdentity)
+        return;
+
+    return new DumpItem(depth, targetPtr, targetIdentity, count);
+}
+
+#pragma endregion
 
 class IdentityItem {
 public:
@@ -539,14 +571,14 @@ private:
             case IDTYPE_PRIMITIVE:
                 item = dispatchPrimitive(depth, curPtr, identity);
                 break;
+            case IDTYPE_POINTER:
+                item = dispatchPointer(depth, curPtr, identity, count);
+                break;
             // TODO:
             //   - Continue reimplementing the dispatchers to fit into the dump script
-            //     + Must return DumpPrimitive*
+            //     + Must return DumpItem*
             //     + Must take in a depth int
             //     + Can't reference any function/variable from the check-structure-sanity recreation
-            case IDTYPE_POINTER:
-                dispatch_pointer(curPtr, identity, count);
-                break;
             case IDTYPE_CONTAINER:
                 dispatch_container(curPtr, identity);
                 break;
